@@ -3,8 +3,7 @@
 #include "time.h"
 #include "..\include\WifiCredentials.h"
 
-#define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
-// #define TIME_TO_SLEEP 10        /* Time ESP32 will go to sleep (in seconds) */
+#define uS_TO_S_FACTOR 1000000LL /* Conversion factor for micro seconds to seconds */
 
 const char *ssid = SSID;
 const char *password = PASSWORD;
@@ -18,7 +17,7 @@ struct tm activationTime;
 struct tm timeOne;
 struct tm timeTwo;
 bool sleepFlag = false;
-int timeToSleep;
+int timeToSleep = 0;
 
 Servo servoMotor;
 int servoPin = 15;
@@ -29,11 +28,23 @@ int switchVal;
 
 void getTime()
 {
-  //TODO: Sometimes this fails! Make a better error handling/show user this failed. Maybe wiggle the servo arm?
-  if (!getLocalTime(&currentTime))
+  // TODO: Sometimes this fails! Make a better error handling/show user this failed. Maybe wiggle the servo arm?
+  while (!getLocalTime(&currentTime))
   {
-    Serial.println("Failed to obtain time");
-    return;
+    Serial.println("Failed to obtain time, trying again");
+    // Wiggle the arm so we know it failed
+    servoMotor.attach(servoPin, 500, 2400);
+    for (int pos = 0; pos <= 60; pos += 1)
+    {
+      servoMotor.write(pos);
+      delay(10);
+    }
+    for (int pos = 60; pos >= 0; pos -= 1)
+    {
+      servoMotor.write(pos);
+      delay(10);
+    }
+    servoMotor.detach(); // detach after use in case of electrical buzzing
   }
   Serial.println(&currentTime, "%A, %B %d %Y %H:%M:%S");
 }
@@ -104,14 +115,22 @@ void setTimeOption()
   Serial.println("Activation time is set to: " + String(activationTime.tm_hour) + ":" + String(activationTime.tm_min));
 }
 
-double getTimeDiff() {
-  tm tempTime;
-  // Copy the current time's month and day - this should be good enough-ish for finding time difference (to be tested lol)
-  tempTime = currentTime;
-  tempTime.tm_hour = activationTime.tm_hour;
-  tempTime.tm_min = activationTime.tm_min;
-  tempTime.tm_mday += 1;
-  return difftime(mktime(&currentTime), mktime(&tempTime));
+double getTimeDiff()
+{
+  tm tempActTime;
+  tm tempCurTime;
+
+  //basically we just need to set the times up to a default place so we can get an accurate difference of seconds
+  //without needing the day or month
+
+  //Update: okay this actually still kinda sucks for an accurate amount of time to sleep for but whatever man
+  tempCurTime = currentTime;
+  tempCurTime.tm_mon = 0; tempCurTime.tm_mday = 1;
+
+  tempActTime = tempCurTime;
+  tempActTime.tm_hour = activationTime.tm_hour; tempActTime.tm_min = activationTime.tm_min;
+
+  return (difftime(mktime(&tempActTime), mktime(&tempCurTime)));
 }
 
 void setup()
@@ -121,8 +140,8 @@ void setup()
   timeOne.tm_hour = 7;
   timeOne.tm_min = 0;
   // Time option 2
-  timeTwo.tm_hour = 21;
-  timeTwo.tm_min = 50;
+  timeTwo.tm_hour = 17;
+  timeTwo.tm_min = 55;
   //------------------------------------------------------------------//
 
   Serial.begin(115200);
@@ -138,12 +157,10 @@ void setup()
 
 void loop()
 {
-  //TODO: Currently setup so that activation time is assumed to be tomorrow - this feels bad.
-  //      Also could be a problem if you activate it after midnight when going to bed
   double timeDiff = getTimeDiff();
   Serial.println("------------------------------------------");
   Serial.println("Activation time is " + String(timeDiff) + " seconds away");
-  if (timeDiff > 3600)  //check if more than an hour away
+  if (timeDiff > 3600) // check if more than an hour away
   {
     sleepFlag = true;
     timeToSleep = timeDiff - 3600;
@@ -151,10 +168,15 @@ void loop()
   }
   else if (timeDiff < 0)
   {
-    //TODO: Do this
-    Serial.println("TEMP");
+    Serial.println("Negative time - add 24hrs");
+    timeDiff += 86400;
+    Serial.println("Activation time is " + String(timeDiff) + " seconds away");
+    sleepFlag = true;
+    timeToSleep = timeDiff - 3600;
+    Serial.println("Setting sleep time to " + String(timeToSleep) + " seconds");
   }
-  else {
+  else
+  {
     sleepFlag = false;
     Serial.println("Sleep not needed - continuing");
   }
@@ -178,12 +200,11 @@ void loop()
     delay(65000);        // delay for 65 seconds so that we don't trigger again
   }
 
-  if(sleepFlag)
+  if (sleepFlag)
   {
-    sleepyTime(); //go to sleep
+    sleepyTime(); // go to sleep
     sleepFlag = false;
   }
-  
 
   delay(1000);
 }
